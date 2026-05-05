@@ -3,10 +3,27 @@
 
 Original Colab: https://colab.research.google.com/drive/1yXKZGGsMBSnaGFeKVR20FqRNwyYV6Nw6
 
-Install dependencies before running:
-  pip install sentence-transformers==3.4.1 pytrec_eval bitsandbytes==0.43.1
-  Note: bitsandbytes requires CUDA; skip it if running CPU-only.
+Run setup.sh first to create the virtual environment and install dependencies.
 """
+
+import torch
+
+# CUDA verification — runs before any heavy imports so failures are obvious
+print("=" * 50)
+print(f"PyTorch version : {torch.__version__}")
+cuda_available = torch.cuda.is_available()
+print(f"CUDA available  : {cuda_available}")
+if cuda_available:
+    print(f"CUDA version    : {torch.version.cuda}")
+    print(f"GPU             : {torch.cuda.get_device_name(0)}")
+    print(f"VRAM            : {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+    device = "cuda"
+else:
+    print("No GPU detected — running on CPU.")
+    print("WARNING: 5e6 training samples on CPU will take days.")
+    print("         Consider setting max_train_samples = 5e4 below.")
+    device = "cpu"
+print("=" * 50)
 
 from torch.utils.data import DataLoader
 from sentence_transformers import LoggingHandler, util
