@@ -1,0 +1,14 @@
+# MS MARCO data
+msmarco-data/
+queries.train.tsv
+queries.dev.tsv
+queries.eval.tsv
+queries.tar.gz
+
+# Trained model output
+cross-encoder-reranker-ir-course-2026/
+
+# Python envs
+.venv/
+__pycache__/
+*.pyc

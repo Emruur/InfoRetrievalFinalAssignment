@@ -8,21 +8,23 @@ Run setup.sh first to create the virtual environment and install dependencies.
 
 import torch
 
-# CUDA verification — runs before any heavy imports so failures are obvious
+# Device detection — CUDA → MPS → CPU
 print("=" * 50)
 print(f"PyTorch version : {torch.__version__}")
-cuda_available = torch.cuda.is_available()
-print(f"CUDA available  : {cuda_available}")
-if cuda_available:
-    print(f"CUDA version    : {torch.version.cuda}")
+if torch.cuda.is_available():
+    device = "cuda"
+    print(f"Backend         : CUDA {torch.version.cuda}")
     print(f"GPU             : {torch.cuda.get_device_name(0)}")
     print(f"VRAM            : {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-    device = "cuda"
+elif torch.backends.mps.is_available():
+    device = "mps"
+    print("Backend         : MPS (Apple Silicon)")
 else:
-    print("No GPU detected — running on CPU.")
+    device = "cpu"
+    print("Backend         : CPU only")
     print("WARNING: 5e6 training samples on CPU will take days.")
     print("         Consider setting max_train_samples = 5e4 below.")
-    device = "cpu"
+print(f"Device selected : {device}")
 print("=" * 50)
 
 from torch.utils.data import DataLoader
@@ -81,7 +83,7 @@ if not os.path.exists('queries.train.tsv'):
     logging.info("Downloading queries.tar.gz")
     util.http_get('https://msmarco.z22.web.core.windows.net/msmarcoranking/queries.tar.gz', queries_tar)
     with tarfile.open(queries_tar, 'r:gz') as tar:
-        tar.extractall()
+        tar.extractall(filter='data')
 
 # Read the corpus (all passages)
 data_folder = 'msmarco-data'
@@ -96,7 +98,7 @@ if not os.path.exists(collection_filepath):
         util.http_get('https://msmarco.z22.web.core.windows.net/msmarcoranking/collection.tar.gz', tar_filepath)
 
     with tarfile.open(tar_filepath, "r:gz") as tar:
-        tar.extractall(path=data_folder)
+        tar.extractall(path=data_folder, filter='data')
 
 with open(collection_filepath, 'r', encoding='utf8') as fIn:
     for line in fIn:
@@ -169,9 +171,8 @@ train_dataloader = DataLoader(train_samples, shuffle=True, batch_size=train_batc
 # Evaluator — runs every 1k steps on the dev set (MRR@10 by default)
 evaluator = CERerankingEvaluator(dev_samples, name='train-eval')
 
-# use_amp requires CUDA; falls back to False on CPU automatically in newer
-# sentence-transformers, but be explicit to avoid warnings
-use_amp = torch.cuda.is_available()
+# AMP is CUDA-only; MPS and CPU must use False
+use_amp = device == "cuda"
 
 # Train and save the model locally under model_save_path
 model.fit(

@@ -1,57 +1,83 @@
 #!/usr/bin/env bash
 set -e
 
-VENV_DIR=".venv"
-PYTHON="python3"
+ENV_NAME="ir-assignment"
+PYTHON_VERSION="3.11"
 
-echo "==> Creating virtual environment in $VENV_DIR"
-$PYTHON -m venv "$VENV_DIR"
-source "$VENV_DIR/bin/activate"
+if conda env list | grep -q "^$ENV_NAME "; then
+    echo "==> Conda env '$ENV_NAME' already exists, updating..."
+else
+    echo "==> Creating conda env '$ENV_NAME' (Python $PYTHON_VERSION)"
+    conda create -y -n "$ENV_NAME" python=$PYTHON_VERSION
+fi
+
+conda run -n "$ENV_NAME" --no-capture-output bash <<'INNER'
+set -e
 
 echo "==> Upgrading pip"
 pip install --upgrade pip
 
-# Detect CUDA via nvidia-smi
-if command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null; then
-    # Parse major.minor version from driver, map to closest PyTorch wheel
-    CUDA_VER=$(nvidia-smi | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+" | head -1)
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+
+detect_cuda_version() {
+    # 1. Try nvidia-smi (may fail if driver/library mismatch)
+    if command -v nvidia-smi &>/dev/null; then
+        VER=$(nvidia-smi 2>/dev/null | grep -oP "CUDA Version: \K[0-9]+\.[0-9]+" | head -1)
+        if [ -n "$VER" ]; then echo "$VER"; return; fi
+    fi
+
+    # 2. Try nvcc
+    if command -v nvcc &>/dev/null; then
+        VER=$(nvcc --version 2>/dev/null | grep -oP "release \K[0-9]+\.[0-9]+" | head -1)
+        if [ -n "$VER" ]; then echo "$VER"; return; fi
+    fi
+
+    # 3. Try CUDA version file
+    for f in /usr/local/cuda/version.json /usr/local/cuda/version.txt; do
+        if [ -f "$f" ]; then
+            VER=$(grep -oP '"version"\s*:\s*"\K[0-9]+\.[0-9]+' "$f" 2>/dev/null \
+               || grep -oP 'CUDA Version \K[0-9]+\.[0-9]+' "$f" 2>/dev/null | head -1)
+            if [ -n "$VER" ]; then echo "$VER"; return; fi
+        fi
+    done
+
+    echo ""
+}
+
+if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ]; then
+    echo "==> Apple Silicon — installing PyTorch with MPS support"
+    pip install torch torchvision
+
+elif [ -e /dev/nvidia0 ] || command -v nvidia-smi &>/dev/null || command -v nvcc &>/dev/null; then
+    CUDA_VER=$(detect_cuda_version)
+
+    if [ -z "$CUDA_VER" ]; then
+        echo "WARNING: NVIDIA GPU detected but could not determine CUDA version."
+        echo "         Defaulting to CUDA 12.1 PyTorch wheel."
+        echo "         Override by setting CUDA_VER=12.x before running this script."
+        CUDA_VER="12.1"
+    fi
+
     CUDA_MAJOR=$(echo "$CUDA_VER" | cut -d. -f1)
     CUDA_MINOR=$(echo "$CUDA_VER" | cut -d. -f2)
+    echo "==> CUDA $CUDA_VER detected"
 
-    echo "==> Detected CUDA $CUDA_VER"
-
-    # Choose the highest supported torch CUDA wheel
     if [ "$CUDA_MAJOR" -ge 12 ] && [ "$CUDA_MINOR" -ge 4 ]; then
         TORCH_INDEX="https://download.pytorch.org/whl/cu124"
-        TORCH_EXTRA="cu124"
     elif [ "$CUDA_MAJOR" -ge 12 ]; then
         TORCH_INDEX="https://download.pytorch.org/whl/cu121"
-        TORCH_EXTRA="cu121"
-    elif [ "$CUDA_MAJOR" -eq 11 ] && [ "$CUDA_MINOR" -ge 8 ]; then
+    else
         TORCH_INDEX="https://download.pytorch.org/whl/cu118"
-        TORCH_EXTRA="cu118"
-    else
-        echo "WARNING: CUDA $CUDA_VER is older than 11.8 — falling back to CPU torch build."
-        TORCH_INDEX=""
-        TORCH_EXTRA="cpu"
     fi
 
-    if [ -n "$TORCH_INDEX" ]; then
-        echo "==> Installing PyTorch (CUDA $TORCH_EXTRA)"
-        pip install torch torchvision --index-url "$TORCH_INDEX"
-    else
-        pip install torch torchvision
-    fi
-
-    echo "==> Installing bitsandbytes (CUDA required)"
+    echo "==> Installing PyTorch from $TORCH_INDEX"
+    pip install torch torchvision --index-url "$TORCH_INDEX"
     pip install bitsandbytes==0.43.1
 
 else
-    echo "==> No CUDA GPU detected — installing CPU-only PyTorch"
-    echo "    Training will work but will be very slow on CPU."
-    echo "    Consider reducing max_train_samples to 5e4 in p1.py."
+    echo "==> No GPU detected — CPU-only PyTorch"
     pip install torch torchvision --index-url "https://download.pytorch.org/whl/cpu"
-    # bitsandbytes is CUDA-only; skip it
 fi
 
 echo "==> Installing core dependencies"
@@ -66,20 +92,23 @@ python - <<'EOF'
 import torch
 
 print(f"PyTorch version : {torch.__version__}")
-print(f"CUDA available  : {torch.cuda.is_available()}")
 if torch.cuda.is_available():
-    print(f"CUDA version    : {torch.version.cuda}")
+    print(f"Backend         : CUDA {torch.version.cuda}")
     print(f"GPU             : {torch.cuda.get_device_name(0)}")
     print(f"VRAM            : {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+elif torch.backends.mps.is_available():
+    print("Backend         : MPS (Apple Silicon)")
 else:
-    print("Running on CPU — no GPU acceleration.")
+    print("Backend         : CPU only")
 
 import sentence_transformers
 print(f"sentence-transformers: {sentence_transformers.__version__}")
 EOF
 
+INNER
+
 echo ""
-echo "Setup complete. Activate the environment with:"
-echo "  source $VENV_DIR/bin/activate"
+echo "Setup complete. Activate with:"
+echo "  conda activate $ENV_NAME"
 echo "Then run:"
 echo "  python p1.py"
