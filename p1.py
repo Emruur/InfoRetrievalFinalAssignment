@@ -77,16 +77,20 @@ model_save_path = os.path.join(
 )
 os.makedirs(model_save_path, exist_ok=True)
 
+# All data lives on the shared disk to avoid home directory quota issues
+DATA_ROOT = "/data/s4402146"
+
 # Download and extract MS MARCO queries if not already present
-queries_tar = 'queries.tar.gz'
-if not os.path.exists('queries.train.tsv'):
+queries_tar = os.path.join(DATA_ROOT, 'queries.tar.gz')
+queries_train_path = os.path.join(DATA_ROOT, 'queries.train.tsv')
+if not os.path.exists(queries_train_path):
     logging.info("Downloading queries.tar.gz")
     util.http_get('https://msmarco.z22.web.core.windows.net/msmarcoranking/queries.tar.gz', queries_tar)
     with tarfile.open(queries_tar, 'r:gz') as tar:
-        tar.extractall(filter='data')
+        tar.extractall(path=DATA_ROOT, filter='data')
 
 # Read the corpus (all passages)
-data_folder = 'msmarco-data'
+data_folder = os.path.join(DATA_ROOT, 'msmarco-data')
 os.makedirs(data_folder, exist_ok=True)
 
 corpus = {}
@@ -107,7 +111,7 @@ with open(collection_filepath, 'r', encoding='utf8') as fIn:
 
 # Read train queries
 queries = {}
-queries_filepath = os.path.join('queries.train.tsv')
+queries_filepath = queries_train_path
 with open(queries_filepath, 'r', encoding='utf8') as fIn:
     for line in fIn:
         qid, query = line.strip().split("\t")
