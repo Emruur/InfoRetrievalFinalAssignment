@@ -1,18 +1,26 @@
 #!/usr/bin/env bash
 set -e
 
-ENV_NAME="ir-assignment"
+ENV_PATH="/data/s4402146/conda-envs/ir-assignment"
 PYTHON_VERSION="3.11"
 
-if conda env list | grep -q "^$ENV_NAME "; then
-    echo "==> Conda env '$ENV_NAME' already exists, updating..."
+mkdir -p "/data/s4402146/conda-envs"
+
+if [ -d "$ENV_PATH" ]; then
+    echo "==> Conda env at $ENV_PATH already exists, updating..."
 else
-    echo "==> Creating conda env '$ENV_NAME' (Python $PYTHON_VERSION)"
-    conda create -y -n "$ENV_NAME" python=$PYTHON_VERSION
+    echo "==> Creating conda env at $ENV_PATH (Python $PYTHON_VERSION)"
+    conda create -y -p "$ENV_PATH" python=$PYTHON_VERSION
 fi
 
-conda run -n "$ENV_NAME" --no-capture-output bash <<'INNER'
+export PIP_CACHE_DIR="/data/s4402146/.pip-cache"
+mkdir -p "$PIP_CACHE_DIR"
+
+conda run -p "$ENV_PATH" --no-capture-output bash <<'INNER'
 set -e
+
+export PIP_CACHE_DIR="/data/s4402146/.pip-cache"
+mkdir -p "$PIP_CACHE_DIR"
 
 echo "==> Upgrading pip"
 pip install --upgrade pip
@@ -109,6 +117,6 @@ INNER
 
 echo ""
 echo "Setup complete. Activate with:"
-echo "  conda activate $ENV_NAME"
+echo "  conda activate $ENV_PATH"
 echo "Then run:"
 echo "  python p1.py"
