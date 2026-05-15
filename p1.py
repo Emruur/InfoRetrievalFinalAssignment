@@ -65,9 +65,9 @@ max_train_samples = 5e6
 
 # Load model — downloaded from HuggingFace Hub on first run,
 # then cached locally at ~/.cache/huggingface/hub/
-model_name = 'cross-encoder/ms-marco-MiniLM-L-2-v2'
+#model_name = 'cross-encoder/ms-marco-MiniLM-L-2-v2'
 # model_name = 'cross-encoder/ms-marco-TinyBERT-L-2-v2'
-# model_name = 'distilroberta-base'
+model_name = 'distilroberta-base'
 model = CrossEncoder(model_name, num_labels=1, max_length=512)
 
 model_save_path = os.path.join(
