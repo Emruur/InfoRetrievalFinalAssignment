@@ -58,7 +58,7 @@ METHODS = [
     ("mnz",   "min-max", "CombMNZ",   "score-based", {}),
     ("rrf",   None,      "RRF",       "rank-based",  {}),
     ("rbc",   None,      "RBC",       "rank-based",  {"phi": 0.8}),
-    ("borda", None,      "BordaFuse", "voting",      {}),
+    ("bordafuse", None,  "BordaFuse", "voting",      {}),
 ]
 
 METRIC = "ndcg@10"
