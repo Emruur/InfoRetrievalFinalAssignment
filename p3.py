@@ -54,11 +54,11 @@ for model_dir, run_path in run_files:
 # ----------------------------------------------------------------------
 # (method_id, norm,      display_label,            family)
 METHODS = [
-    ("combsum",   "min-max", "CombSUM",    "score-based"),
-    ("combmnz",   "min-max", "CombMNZ",    "score-based"),
-    ("rrf",       None,      "RRF",         "rank-based"),
-    ("rbc",       None,      "RBC",         "rank-based"),
-    ("bordafuse", None,      "BordaFuse",   "voting"),
+    ("sum",   "min-max", "CombSUM",    "score-based"),
+    ("mnz",   "min-max", "CombMNZ",    "score-based"),
+    ("rrf",   None,      "RRF",        "rank-based"),
+    ("rbc",   None,      "RBC",        "rank-based"),
+    ("borda", None,      "BordaFuse",  "voting"),
 ]
 
 METRIC = "ndcg@10"
