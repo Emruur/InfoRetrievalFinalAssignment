@@ -54,11 +54,11 @@ for model_dir, run_path in run_files:
 # ----------------------------------------------------------------------
 # (method_id, norm,      display_label,            family)
 METHODS = [
-    ("sum",   "min-max", "CombSUM",    "score-based"),
-    ("mnz",   "min-max", "CombMNZ",    "score-based"),
-    ("rrf",   None,      "RRF",        "rank-based"),
-    ("rbc",   None,      "RBC",        "rank-based"),
-    ("borda", None,      "BordaFuse",  "voting"),
+    ("sum",   "min-max", "CombSUM",   "score-based", {}),
+    ("mnz",   "min-max", "CombMNZ",   "score-based", {}),
+    ("rrf",   None,      "RRF",       "rank-based",  {}),
+    ("rbc",   None,      "RBC",       "rank-based",  {"phi": 0.8}),
+    ("borda", None,      "BordaFuse", "voting",      {}),
 ]
 
 METRIC = "ndcg@10"
@@ -83,10 +83,12 @@ print(f"{'Method':<20} {'Family':<15} {'NDCG@10':>8}")
 print(f"{'-'*65}")
 
 fused_runs = []
-for method_id, norm, label, family in METHODS:
+for method_id, norm, label, family, params in METHODS:
     kwargs = {"runs": runs, "method": method_id}
     if norm:
         kwargs["norm"] = norm
+    if params:
+        kwargs["params"] = params
     combined = fuse(**kwargs)
     combined.name = label
     fused_runs.append(combined)
