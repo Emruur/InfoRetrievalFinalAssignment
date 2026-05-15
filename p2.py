@@ -8,10 +8,11 @@ from collections import defaultdict
 import numpy as np
 import tqdm
 import pytrec_eval
+import pandas as pd
+import matplotlib.pyplot as plt
 from sentence_transformers import util
 from sentence_transformers.cross_encoder import CrossEncoder
 
-# Setup logging so you can see the output in the terminal
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
 logging.basicConfig(format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
@@ -20,30 +21,43 @@ logging.basicConfig(format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:
 # 1. Configuration & Paths
 # ----------------------------------------------------------------------
 base_path = "./cross-encoder-reranker-ir-course-2026/"
-os.makedirs(base_path, exist_ok=True)
+finetuned_dir = os.path.join(base_path, "finetuned_models")
 
-# TODO: REPLACE THIS STRING WITH THE ACTUAL FOLDER NAME FROM YOUR TRAINING RUN
-model_save_path = os.path.join(base_path, "finetuned_models", "YOUR-MODEL-DIRECTORY-NAME-HERE") 
+# Auto-discover completed model directories (must have model.safetensors or pytorch_model.bin)
+model_dirs = sorted([
+    os.path.join(finetuned_dir, d)
+    for d in os.listdir(finetuned_dir)
+    if os.path.isdir(os.path.join(finetuned_dir, d))
+    and (
+        os.path.exists(os.path.join(finetuned_dir, d, "model.safetensors"))
+        or os.path.exists(os.path.join(finetuned_dir, d, "pytorch_model.bin"))
+    )
+])
+
+logging.info(f"Found {len(model_dirs)} completed model(s):")
+for d in model_dirs:
+    logging.info(f"  {os.path.basename(d)}")
 
 # ----------------------------------------------------------------------
-# 2. Download Data
+# 2. Download Data (once)
 # ----------------------------------------------------------------------
-# Download and extract queries
-queries_tar = 'queries.tar.gz'
-if not os.path.exists('queries.train.tsv'):
+DATA_ROOT = "/data/s4402146"
+queries_tar = os.path.join(DATA_ROOT, 'queries.tar.gz')
+queries_train_path = os.path.join(DATA_ROOT, 'queries.train.tsv')
+if not os.path.exists(queries_train_path):
     logging.info("Downloading queries.tar.gz")
     util.http_get('https://msmarco.z22.web.core.windows.net/msmarcoranking/queries.tar.gz', queries_tar)
     with tarfile.open(queries_tar, 'r:gz') as tar:
-        tar.extractall(filter='data')
+        tar.extractall(path=DATA_ROOT, filter='data')
 
-data_folder = 'trec2019-data'
+data_folder = os.path.join(DATA_ROOT, 'trec2019-data')
 os.makedirs(data_folder, exist_ok=True)
 
-# Read test queries
+# Test queries
 queries = {}
 queries_filepath = os.path.join(data_folder, 'msmarco-test2019-queries.tsv.gz')
 if not os.path.exists(queries_filepath):
-    logging.info("Download " + os.path.basename(queries_filepath))
+    logging.info("Downloading msmarco-test2019-queries.tsv.gz")
     util.http_get('https://msmarco.z22.web.core.windows.net/msmarcoranking/msmarco-test2019-queries.tsv.gz', queries_filepath)
 
 with gzip.open(queries_filepath, 'rt', encoding='utf8') as fIn:
@@ -51,32 +65,25 @@ with gzip.open(queries_filepath, 'rt', encoding='utf8') as fIn:
         qid, query = line.strip().split("\t")
         queries[qid] = query
 
-# Read which passages are relevant
+# Relevance judgements
 relevant_docs = defaultdict(lambda: defaultdict(int))
 qrels_filepath = os.path.join(data_folder, '2019qrels-pass.txt')
-
 if not os.path.exists(qrels_filepath):
-    logging.info("Download " + os.path.basename(qrels_filepath))
+    logging.info("Downloading 2019qrels-pass.txt")
     util.http_get('https://trec.nist.gov/data/deep/2019qrels-pass.txt', qrels_filepath)
 
 with open(qrels_filepath) as fIn:
     for line in fIn:
         qid, _, pid, score = line.strip().split()
-        score = int(score)
-        if score > 0:
-            relevant_docs[qid][pid] = score
+        if int(score) > 0:
+            relevant_docs[qid][pid] = int(score)
 
-# Only use queries that have at least one relevant passage
-relevant_qid = []
-for qid in queries:
-    if len(relevant_docs[qid]) > 0:
-        relevant_qid.append(qid)
+relevant_qid = [qid for qid in queries if len(relevant_docs[qid]) > 0]
 
-# Read the top 1000 passages that are supposed to be re-ranked
+# Top-1000 candidates
 passage_filepath = os.path.join(data_folder, 'msmarco-passagetest2019-top1000.tsv.gz')
-
 if not os.path.exists(passage_filepath):
-    logging.info("Download " + os.path.basename(passage_filepath))
+    logging.info("Downloading msmarco-passagetest2019-top1000.tsv.gz")
     util.http_get('https://msmarco.z22.web.core.windows.net/msmarcoranking/msmarco-passagetest2019-top1000.tsv.gz', passage_filepath)
 
 passage_cand = {}
@@ -87,71 +94,95 @@ with gzip.open(passage_filepath, 'rt', encoding='utf8') as fIn:
             passage_cand[qid] = []
         passage_cand[qid].append([pid, passage])
 
-logging.info(f"Queries: {len(queries)}")
+logging.info(f"Test queries with relevance judgements: {len(relevant_qid)}")
 
 # ----------------------------------------------------------------------
-# 3. Prediction
+# 3. Evaluate each model & plot training curves
 # ----------------------------------------------------------------------
-logging.info(f"Loading model from: {model_save_path}")
-model = CrossEncoder(model_save_path, max_length=512)
+all_results = []
 
-run = {}
-for qid in tqdm.tqdm(relevant_qid, desc="Evaluating Queries"):
-    query = queries[qid]
+for model_save_path in model_dirs:
+    model_name = os.path.basename(model_save_path)
+    logging.info(f"\n{'='*60}")
+    logging.info(f"Evaluating: {model_name}")
+    logging.info(f"{'='*60}")
 
-    cand = passage_cand.get(qid, [])
-    if not cand:
-        continue
-        
-    pids = [c[0] for c in cand]
-    corpus_sentences = [c[1] for c in cand]
-
-    cross_inp = [[query, sent] for sent in corpus_sentences]
-
-    if model.config.num_labels > 1: # Cross-Encoder that predicts more than 1 score
-        cross_scores = model.predict(cross_inp, apply_softmax=True)[:, 1].tolist()
+    # --- Training curve ---
+    log_path = os.path.join(model_save_path, "CERerankingEvaluator_train-eval_results_@10.csv")
+    if os.path.exists(log_path):
+        df = pd.read_csv(log_path)
+        fig, ax = plt.subplots(figsize=(8, 4))
+        ax.plot(df["steps"], df["MRR@10"], marker="o", label="MRR@10")
+        ax.plot(df["steps"], df["NDCG@10"], marker="s", label="NDCG@10")
+        ax.set_xlabel("Training Steps")
+        ax.set_ylabel("Score")
+        ax.set_title(f"Training curve — {model_name}")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        plot_path = os.path.join(model_save_path, "training_curve.png")
+        fig.savefig(plot_path, dpi=150)
+        plt.close(fig)
+        logging.info(f"Training plot saved to: {plot_path}")
     else:
-        cross_scores = model.predict(cross_inp).tolist()
+        logging.warning(f"No training log found at {log_path}, skipping plot.")
 
-    run[qid] = {}
-    for idx, pid in enumerate(pids):
-        run[qid][pid] = float(cross_scores[idx])
+    # --- Re-ranking ---
+    model = CrossEncoder(model_save_path, max_length=512)
+
+    run = {}
+    for qid in tqdm.tqdm(relevant_qid, desc=f"Re-ranking [{model_name[:40]}]"):
+        query = queries[qid]
+        cand = passage_cand.get(qid, [])
+        if not cand:
+            continue
+
+        pids = [c[0] for c in cand]
+        cross_inp = [[query, c[1]] for c in cand]
+
+        if model.config.num_labels > 1:
+            cross_scores = model.predict(cross_inp, apply_softmax=True)[:, 1].tolist()
+        else:
+            cross_scores = model.predict(cross_inp).tolist()
+
+        run[qid] = {pid: float(score) for pid, score in zip(pids, cross_scores)}
+
+    # --- Metrics ---
+    evaluator = pytrec_eval.RelevanceEvaluator(relevant_docs, {'ndcg_cut.10', 'recall_100', 'map_cut.1000'})
+    scores = evaluator.evaluate(run)
+
+    ndcg  = np.mean([v["ndcg_cut_10"]    for v in scores.values()]) * 100
+    rec   = np.mean([v["recall_100"]     for v in scores.values()]) * 100
+    mAP   = np.mean([v["map_cut_1000"]   for v in scores.values()]) * 100
+
+    all_results.append({"model": model_name, "NDCG@10": ndcg, "Recall@100": rec, "MAP@1000": mAP})
+
+    print(f"\n{'='*40}")
+    print(f"Model: {model_name}")
+    print(f"  NDCG@10:    {ndcg:.2f}")
+    print(f"  Recall@100: {rec:.2f}")
+    print(f"  MAP@1000:   {mAP:.2f}")
+    print(f"{'='*40}\n")
+
+    # --- Save ranking run ---
+    sorted_run = []
+    for qid, pid_scores in run.items():
+        for rank, (pid, score) in enumerate(sorted(pid_scores.items(), key=operator.itemgetter(1), reverse=True)):
+            sorted_run.append(f"{qid} Q0 {pid} {rank} {score} STANDARD")
+
+    ranking_run_file_path = os.path.join(model_save_path, "ranking.run")
+    with open(ranking_run_file_path, "w") as f:
+        f.write("\n".join(sorted_run))
+    logging.info(f"Ranking run saved to: {ranking_run_file_path}")
+
+    del model
 
 # ----------------------------------------------------------------------
-# 4. Evaluation
+# 4. Summary table
 # ----------------------------------------------------------------------
-evaluator = pytrec_eval.RelevanceEvaluator(relevant_docs, {'ndcg_cut.10', 'recall_100', 'map_cut.1000'})
-scores = evaluator.evaluate(run)
-
-print("\n" + "="*40)
-print(f"Queries evaluated: {len(relevant_qid)}")
-print("NDCG@10:    {:.2f}".format(np.mean([ele["ndcg_cut_10"] for ele in scores.values()]) * 100))
-print("Recall@100: {:.2f}".format(np.mean([ele["recall_100"] for ele in scores.values()]) * 100))
-print("MAP@1000:   {:.2f}".format(np.mean([ele["map_cut_1000"] for ele in scores.values()]) * 100))
-print("="*40 + "\n")
-
-# ----------------------------------------------------------------------
-# 5. Store Ranking Run File
-# ----------------------------------------------------------------------
-# Sort candidate documents of each query based on their relevance score
-for qid in run.keys():
-    run[qid] = sorted(run[qid].items(), key=operator.itemgetter(1), reverse=True)
-
-ranking_lines = []
-for qid in run.keys():
-    for rank, did_pred_score in enumerate(run[qid]):
-        did, pred_score = did_pred_score
-        line = f"{qid} Q0 {did} {rank} {pred_score} STANDARD"
-        ranking_lines.append(line)
-
-ranking_run_file_path = os.path.join(model_save_path, "ranking.run")
-with open(ranking_run_file_path, "w+") as f_w:
-    f_w.write("\n".join(ranking_lines))
-
-logging.info(f"Ranking run file saved to: {ranking_run_file_path}")
-
-# Print the first three lines (Replacing the !head bash command)
-print("\nFirst 3 lines of the stored ranking run file:")
-with open(ranking_run_file_path, "r") as f:
-    for _ in range(3):
-        print(f.readline().strip())
+print("\n" + "="*70)
+print(f"{'Model':<50} {'NDCG@10':>8} {'Rec@100':>9} {'MAP@1000':>9}")
+print("-"*70)
+for r in all_results:
+    print(f"{r['model']:<50} {r['NDCG@10']:>8.2f} {r['Recall@100']:>9.2f} {r['MAP@1000']:>9.2f}")
+print("="*70)
